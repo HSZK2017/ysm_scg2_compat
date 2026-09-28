@@ -1,6 +1,12 @@
 package com.ysm.scg2.compat;
 
 import com.mojang.logging.LogUtils;
+import com.ysm.scg2.compat.client.Diagnostics;
+import com.ysm.scg2.compat.client.RenderProbe;
+import com.ysm.scg2.compat.client.YsmBridge;
+import com.ysm.scg2.compat.ysm.YsmFork;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
@@ -65,6 +71,16 @@ public class YsmScg2Compat {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public YsmScg2Compat() {
+        // The probe channel is opened here as well as in the mixin plugin: whichever runs first wins,
+        // and startRun truncates, so a stale file can never be mistaken for this run.
+        ProbeLog.startRun("ysm_scg2_compat probe log (constructor)");
+        ProbeLog.log("ctor", "mod constructor entered; dist=" + FMLLoader.getDist()
+                + " ysmModFile=" + ModPresence.isLoaded(YSM_MOD_ID)
+                + " scguns=" + ModPresence.isLoaded(SCGUNS_MOD_ID)
+                + " modList=" + (ModList.get() == null ? "null" : ModList.get().getMods().size() + " mods")
+                + " loadingModList=" + (net.minecraftforge.fml.loading.LoadingModList.get() == null
+                        ? "null" : "present"));
+
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, CompatConfig.SPEC);
 
         if (!FMLLoader.getDist().isClient()) {
@@ -81,15 +97,51 @@ public class YsmScg2Compat {
             return;
         }
         if (!ysm) {
-            // The interesting half of the "which path matched" question. Not an error:
-            // mods.toml declares yes_steve_model optional.
             LOGGER.info("[{}] path: no-ysm. Yes Steve Model is not installed; nothing to patch.", MOD_ID);
             return;
         }
 
-        LOGGER.info("[{}] path: active. Yes Steve Model + Scorched Guns 2 both present; "
-                        + "the mixin plugin will patch {} (guarded by 'does the model have the animation').",
-                MOD_ID, "com.elfmcys.yesstevemodel.client.compat.gun.tacz.TacCompat");
+        LOGGER.info("[{}] path: active. Yes Steve Model + Scorched Guns 2 both present.", MOD_ID);
+
+        // Which build is installed decides every name this mod has to use. Detected here for
+        // the early log line, but a NEGATIVE answer is deliberately not cached: Forge fills
+        // ModList while loading mods in parallel, so during construction "is YSM loaded" can
+        // answer false for a mod that is present. A real launch did exactly that, two
+        // milliseconds after the same check answered true - and the cached false negative
+        // disabled the whole diagnostic layer for the session.
+        YsmFork.Info fork = YsmFork.reportAtStartup();
+
+        // Everything that touches YSM is deferred to after mod loading, where the mod list and
+        // the class list are settled. Each step is isolated, so one failure cannot take the
+        // others - or the game - down.
+        //
+        // The bus matters: FMLLoadCompleteEvent is a MOD lifecycle event and fires on the mod
+        // event bus, not on MinecraftForge.EVENT_BUS. Registering it on the wrong one produces
+        // no error and no warning - the listener is simply never called, which looks identical
+        // to a listener whose condition was false. It did exactly that in a real launch, which
+        // is why the client tick is registered as well.
+        LoadCompleteHandler loadCompleteHandler = new LoadCompleteHandler();
+        loadCompleteHandler.register();
+        MinecraftForge.EVENT_BUS.register(loadCompleteHandler);
+        ProbeLog.log("ctor", "LoadCompleteHandler registered on the MOD bus (FMLLoadCompleteEvent) and "
+                + "on the FORGE bus (client tick fallback)");
+
+        DeferredInit.add("re-identify YSM build", YsmFork::reportAtStartup);
+        DeferredInit.add("resolve YSM capability and TACZ bridge class", YsmBridge::refreshAvailability);
+        DeferredInit.add("register diagnostics and render probe", () -> {
+            MinecraftForge.EVENT_BUS.register(new Diagnostics());
+            MinecraftForge.EVENT_BUS.register(new RenderProbe());
+            LOGGER.info("[{}] diagnostics registered (model report {}, render probe {})",
+                    MOD_ID,
+                    CompatConfig.LOG_MODEL_TAC_ANIMATIONS.get() ? "on" : "off",
+                    CompatConfig.LOG_RENDER_PROBE.get() ? "on" : "off");
+        });
+
+        if (!YsmBridge.isAvailable()) {
+            LOGGER.debug("[{}] YSM types are not resolvable yet ({}); that is expected during mod "
+                            + "construction and is re-checked once loading completes.",
+                    MOD_ID, fork.build());
+        }
     }
 
     /**

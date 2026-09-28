@@ -1,5 +1,11 @@
 # YSM x Scorched Guns 2 Compat
 
+> **v1.1.0 - supports both Yes Steve Model builds.** The obfuscated official release and the
+> readable community fork are targeted by two mixin variants in two source sets, selected at
+> runtime by `YsmForkMixinPlugin` from YSM's own class list. Read
+> [KNOWN-LIMITS.md](KNOWN-LIMITS.md) before trusting anything here: both paths are
+> offline-verified down to the descriptors compiled into the shipped classes, and **neither
+> has been observed working in a running client yet**.
 A small **client-side** Forge mod for Minecraft 1.20.1 that makes **Yes Steve Model
 (OpenYSM)** play a model's built-in `tac:*` gun animations while the player holds a
 **Scorched Guns 2** weapon.

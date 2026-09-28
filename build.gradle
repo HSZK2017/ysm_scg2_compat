@@ -17,9 +17,48 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
 println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
 
-// One shared mixin config for everything. The config is registered by the mod
-// constructor ONLY when Yes Steve Model is actually present, so a game without
-// YSM never loads it and never resolves the YSM target classes.
+// ===================================================================
+// Two source sets, because Yes Steve Model ships in two namespaces.
+//
+// `main` compiles against the readable OpenYSM fork, so its mixin can name
+// client.compat.gun.tacz.TacCompat#handleGunHoldAnimState.
+//
+// `legacy` compiles against the OBFUSCATED official release, so its mixin can name
+// com.elfmcys.yesstevemodel.OOO0O0O0oo0ooooo00oOOOO0#Oo0Oo0o00O00Oo0OOoOOoooo AND
+// reference the obfuscated AnimationEvent/PlayState types its handler parameters must
+// match. That second half is why a second source set is required rather than a second
+// annotation: a mixin handler has to name the target's parameter types, and those exist
+// only in the namespace the mod was compiled against.
+//
+// The reference project `ysm_epicfight_compat` does the same thing (it imports obfuscated
+// class names directly in its @Mixin annotations). Both source sets are packaged into the
+// one jar; YsmForkMixinPlugin selects which mixin applies at runtime.
+// ===================================================================
+sourceSets {
+    legacy {
+        java.srcDir 'src/legacy/java'
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    legacyImplementation.extendsFrom(implementation)
+    legacyCompileOnly.extendsFrom(compileOnly)
+}
+
+// The legacy variant's outputs ship inside the mod jar.
+tasks.named('jar', Jar).configure {
+    from sourceSets.legacy.output
+}
+
+// ...and its refmap has to be merged, or the obfuscated variant's injected descriptors
+// would silently not remap.
+mixin {
+    add sourceSets.legacy, "${mod_id}.refmap.json"
+}
+
+// One shared mixin config for everything. The plugin decides per build which mixin applies.
 mixin {
     add sourceSets.main, "${mod_id}.refmap.json"
     config "${mod_id}.mixins.json"
@@ -110,6 +149,20 @@ dependencies {
     compileOnly files('libs/ysm-2.6.5-forge+mc1.20.1.jar')
 
     // ---------------------------------------------------------------
+    // Yes Steve Model, OFFICIAL OBFUSCATED RELEASE -- compileOnly, and only for the
+    // `legacy` source set.
+    //
+    // This is the build almost every player has. Its class and method names are
+    // obfuscated, so the legacy mixin has to be compiled against this jar to be able to
+    // name them - exactly how the reference project `ysm_epicfight_compat` supports the
+    // same build. The jar is NOT bundled; the mod only needs it at compile time.
+    //
+    // Get it from an instance (`mods/[是，史蒂夫模型] ysm-<version>-release.jar`) or an
+    // upstream release download; see libs/README-libs.txt.
+    // ---------------------------------------------------------------
+    legacyCompileOnly files('libs/ysm-2.6.5-official-release.jar')
+
+    // ---------------------------------------------------------------
     // Scorched Guns 2 + its hard dependencies -- REQUIRED at runtime.
     //
     // Not referenced by name anywhere in this mod's sources: every SCG2 read
@@ -165,4 +218,11 @@ tasks.named('jar', Jar).configure {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+    // TacCompatForkMixin uses a string @Mixin target: this mod compiles against the OBFUSCATED
+    // official YSM release (see libs/README-libs.txt), where
+    // client.compat.gun.tacz.TacCompat does not exist, so the processor cannot resolve the
+    // target and would fail the build. Without this flag the build is red on the correct
+    // target; with it, a wrong target string is a runtime warning instead - which is why
+    // tools/verify-mixin-targets.ps1 checks the strings against the real jars.
+    options.compilerArgs += '-AMSG_MIXIN_SOFT_TARGET_NOT_FOUND=warning'
 }
