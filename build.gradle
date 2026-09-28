@@ -1,0 +1,168 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.+'
+}
+
+version = mod_version
+group = 'com.ysm.scg2'
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+
+// One shared mixin config for everything. The config is registered by the mod
+// constructor ONLY when Yes Steve Model is actually present, so a game without
+// YSM never loads it and never resolves the YSM target classes.
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+
+            // Mixin refmap remapping
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcMappings/output.srg"
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+
+        gameTestServer {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        data {
+            workingDirectory project.file('run-data')
+            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    maven {
+        name = 'Cursemaven'
+        url "https://cursemaven.com"
+        content {
+            includeGroup "curse.maven"
+        }
+    }
+
+    maven {
+        name = 'Sponge'
+        url "https://repo.spongepowered.org/repository/maven-public/"
+    }
+
+    // Local jars: OpenYSM (see libs/README-libs.txt)
+    flatDir {
+        dir 'libs'
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // ---------------------------------------------------------------
+    // Yes Steve Model (OpenYSM) -- compileOnly, and deliberately NOT fg.deobf'd.
+    //
+    // The jar is compared AS SHIPPED (official mappings). That matters for the
+    // mixin: the injection targets a third-party method by its literal name with
+    // remap = false, so what must match is the runtime name in the shipped jar.
+    // Running it through fg.deobf would rewrite the Minecraft types inside it and
+    // make the compile-time view diverge from the runtime one for no benefit.
+    //
+    // Needed at COMPILE time because the client mixins reference
+    // com.elfmcys.yesstevemodel.client.compat.gun.tacz.TacCompat.
+    // OPTIONAL at runtime: mods.toml declares yes_steve_model mandatory=false and
+    // YsmScg2MixinPlugin refuses to apply anything when the mod is absent.
+    // ---------------------------------------------------------------
+    compileOnly files('libs/ysm-2.6.5-forge+mc1.20.1.jar')
+
+    // ---------------------------------------------------------------
+    // Scorched Guns 2 + its hard dependencies -- REQUIRED at runtime.
+    //
+    // Not referenced by name anywhere in this mod's sources: every SCG2 read
+    // goes through com.ysm.scg2.compat.compat.Scg2GunAccess, which is
+    // reflection-only by design. They are still declared so the mixin
+    // annotation processor and IDE see a complete classpath, and so the
+    // dependency versions are pinned in one obvious place.
+    // ---------------------------------------------------------------
+    compileOnly fg.deobf('curse.maven:scorched-guns-2-802940:7232063')
+    compileOnly fg.deobf('curse.maven:framework-549225:7573740')
+    compileOnly fg.deobf('curse.maven:geckolib-388172:8285794')
+
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version          : forge_version,
+            forge_version_range    : forge_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                'MixinConfigs'            : "${mod_id}.mixins.json"
+        ])
+    }
+
+    finalizedBy 'reobfJar'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

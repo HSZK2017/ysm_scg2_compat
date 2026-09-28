@@ -1,0 +1,28 @@
+{
+  "ysm_scg2_compat.configuration.title": "YSM x Scorched Guns 2 Compat",
+  "ysm_scg2_compat.configuration.section.common.toml": "Common settings",
+  "ysm_scg2_compat.configuration.section.common.toml.title": "YSM x Scorched Guns 2 Compat",
+
+  "ysm_scg2_compat.configuration.animation": "Gun animation translation",
+  "ysm_scg2_compat.configuration.animation.button": "Gun animation translation",
+  "ysm_scg2_compat.configuration.animation.tooltip": "How Scorched Guns 2 weapons are translated into the tac:* gun animations a Yes Steve Model model can play.",
+
+  "ysm_scg2_compat.configuration.enable_gun_animation": "Enable gun animation translation",
+  "ysm_scg2_compat.configuration.enable_gun_animation.tooltip": "Teach Yes Steve Model that a Scorched Guns 2 weapon is a gun, so the model plays its built-in tac:hold / tac:aim / tac:reload animations. Only applied when the model actually contains the animation.",
+
+  "ysm_scg2_compat.configuration.use_per_gun_animation_override": "Per-weapon animation override",
+  "ysm_scg2_compat.configuration.use_per_gun_animation_override.tooltip": "Prefer tac:hold:rifle$scguns:musket over tac:hold:rifle when the model defines it.",
+
+  "ysm_scg2_compat.configuration.log_model_tac_animations": "Log model report on reload",
+  "ysm_scg2_compat.configuration.log_model_tac_animations.tooltip": "Print which tac:* animations the local player's model contains. This is how you tell 'the model cannot do gun animations' apart from 'the mod is not working'.",
+
+  "ysm_scg2_compat.configuration.log_animation_decisions": "Log animation decisions (verbose)",
+  "ysm_scg2_compat.configuration.log_animation_decisions.tooltip": "Per-frame log of which animation was matched or declined. Runs every frame - enable only while reproducing a problem.",
+
+  "ysm_scg2_compat.configuration.diagnostics": "Diagnostics",
+  "ysm_scg2_compat.configuration.diagnostics.button": "Diagnostics",
+  "ysm_scg2_compat.configuration.diagnostics.tooltip": "Measurement only. Nothing here changes behaviour.",
+
+  "ysm_scg2_compat.configuration.log_render_probe": "Log render probe",
+  "ysm_scg2_compat.configuration.log_render_probe.tooltip": "Log which custom item renderer drew the held weapon and the pose-stack translation YSM handed it. Use this to diagnose 'the weapon model does not appear in third person'."
+}

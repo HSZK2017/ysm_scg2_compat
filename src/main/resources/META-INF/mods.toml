@@ -1,0 +1,57 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="${mod_license}"
+
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="${mod_authors}"
+description='''${mod_description}'''
+
+# ---------------------------------------------------------------------------
+# Forge / Minecraft
+# ---------------------------------------------------------------------------
+[[dependencies.${mod_id}]]
+    modId="forge"
+    mandatory=true
+    versionRange="${forge_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# ---------------------------------------------------------------------------
+# Scorched Guns 2 -- HARD dependency.
+#
+# This mod only exists to translate SCG2 weapons into the shape that Yes Steve
+# Model's TACZ compat layer expects. Without the guns there is nothing to
+# translate; and SCG2 is where every type we touch lives, so it must be AFTER.
+# ---------------------------------------------------------------------------
+[[dependencies.${mod_id}]]
+    modId="scguns"
+    mandatory=true
+    versionRange="[0.5.0,)"
+    ordering="AFTER"
+    side="BOTH"
+
+# ---------------------------------------------------------------------------
+# Yes Steve Model (OpenYSM) -- SOFT dependency, CLIENT side.
+#
+# mandatory=false on purpose: this is a pure client-side translation layer, and
+# YsmScg2MixinPlugin refuses to apply any mixin unless this mod is loaded, so a
+# game without YSM never resolves a YSM class. Every log line says which path
+# matched, so "YSM absent" is distinguishable from "injection failed" instead of
+# both looking like silence.
+# ---------------------------------------------------------------------------
+[[dependencies.${mod_id}]]
+    modId="yes_steve_model"
+    mandatory=false
+    versionRange="[2.0.0,)"
+    ordering="AFTER"
+    side="CLIENT"
