@@ -1,6 +1,7 @@
 package com.ysm.scg2.compat.compat;
 
 import com.ysm.scg2.compat.YsmScg2Compat;
+import com.ysm.scg2.compat.ysm.MemberLookup;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
@@ -8,9 +9,6 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.jetbrains.annotations.Nullable;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
@@ -68,10 +66,10 @@ public final class Scg2GunAccess {
     // the render thread on first use.
     private static final Map<String, Method> METHOD_CACHE = new ConcurrentHashMap<>();
 
-    private static final MethodHandle KEY_AIMING = resolveSyncedKey("AIMING");
-    private static final MethodHandle KEY_SHOOTING = resolveSyncedKey("SHOOTING");
-    private static final MethodHandle KEY_RELOADING = resolveSyncedKey("RELOADING");
-    private static final MethodHandle KEY_MELEE = resolveSyncedKey("MELEE");
+    private static final SyncedReader KEY_AIMING = resolveSyncedKey("AIMING");
+    private static final SyncedReader KEY_SHOOTING = resolveSyncedKey("SHOOTING");
+    private static final SyncedReader KEY_RELOADING = resolveSyncedKey("RELOADING");
+    private static final SyncedReader KEY_MELEE = resolveSyncedKey("MELEE");
 
     /** One-shot guards so a broken install logs once instead of once per frame. */
     private static volatile boolean gunClassWarningLogged;
@@ -248,16 +246,11 @@ public final class Scg2GunAccess {
      * instance) has no state and correctly reads {@code false} - which lets the caller
      * fall through to the neutral hold animation.</p>
      */
-    private static boolean readSyncedBoolean(@Nullable MethodHandle getValue, LivingEntity entity) {
-        if (getValue == null || !(entity instanceof Player)) {
+    private static boolean readSyncedBoolean(@Nullable SyncedReader reader, LivingEntity entity) {
+        if (reader == null || !(entity instanceof Player)) {
             return false;
         }
-        try {
-            Object result = getValue.invoke(entity);
-            return result instanceof Boolean value && value;
-        } catch (Throwable t) {
-            return false;
-        }
+        return reader.readBoolean(entity);
     }
 
     // ------------------------------------------------------------------
@@ -310,17 +303,67 @@ public final class Scg2GunAccess {
     }
 
     /**
-     * Resolves a {@code SyncedDataKey} constant into a ready-to-call
-     * {@code getValue(Player)} handle, or {@code null} (with one warning) when the field
-     * or the accessor has moved.
+     * One SCG2 synced flag: the {@code SyncedDataKey} object plus its value accessor.
      *
-     * <p>Uses {@code findVirtual} on the key's own class rather than {@code bindTo} on the
-     * superclass: a handle bound to a subclass cannot be adapted down to the parent type,
-     * while {@code findVirtual} resolves the receiver against the declaring class and
-     * accepts any subtype at call time.</p>
+     * <h3>Why the accessor is not looked up with an exact parameter type</h3>
+     * <p>{@code SyncedDataKey} is a generic record - {@code <E extends Entity, T> T getValue(E)} -
+     * so the <b>declared</b> parameter type is the erasure of the bound, {@code Entity}, and the
+     * generic argument ({@code Player} here) never appears in the signature. Asking for
+     * {@code getValue(Player)} therefore threw {@code NoSuchMethodException} on every launch, all
+     * four of these keys resolved to {@code null}, and the mod's reading was:</p>
+     *
+     * <pre>
+     * SCG2 synced key AIMING is unavailable; that part of the weapon state will read as 'off'
+     * </pre>
+     *
+     * <p>The consequence was invisible rather than loud: every firing, reloading and melee
+     * animation was declined for SCG2 weapons, with no error anywhere, because "the state is
+     * off" and "the accessor is missing" produce the same answer. The accessor is now matched
+     * against the receiver by assignability ({@link MemberLookup}) and cached.</p>
+     */
+    private static final class SyncedReader {
+
+        private final String fieldName;
+        private final Object key;
+
+        /** Resolved on first read, when the entity's own class is available to match against. */
+        @Nullable
+        private volatile Method accessor;
+
+        private SyncedReader(String fieldName, Object key) {
+            this.fieldName = fieldName;
+            this.key = key;
+        }
+
+        private boolean readBoolean(LivingEntity entity) {
+            try {
+                Method method = accessor;
+                if (method == null || !method.getParameterTypes()[0].isInstance(entity)) {
+                    method = MemberLookup.find(key.getClass(), "getValue", entity);
+                    if (method == null) {
+                        return false;
+                    }
+                    accessor = method;
+                }
+                Object value = method.invoke(key, entity);
+                return value instanceof Boolean flag && flag;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        @Override
+        public String toString() {
+            return fieldName;
+        }
+    }
+
+    /**
+     * Resolves a {@code SyncedDataKey} constant into a ready-to-use reader, or {@code null}
+     * (with one warning) when the field has moved.
      */
     @Nullable
-    private static MethodHandle resolveSyncedKey(String fieldName) {
+    private static SyncedReader resolveSyncedKey(String fieldName) {
         try {
             Class<?> keys = Class.forName(SYNCED_KEYS_CLASS);
             Field field = keys.getField(fieldName);
@@ -328,9 +371,7 @@ public final class Scg2GunAccess {
             if (key == null) {
                 throw new IllegalStateException("field " + fieldName + " is null");
             }
-            return MethodHandles.publicLookup()
-                    .findVirtual(key.getClass(), "getValue", MethodType.methodType(Object.class, Player.class))
-                    .bindTo(key);
+            return new SyncedReader(fieldName, key);
         } catch (Throwable t) {
             YsmScg2Compat.LOGGER.warn("[{}] SCG2 synced key {} is unavailable; that part of the weapon state will read as 'off' ({})",
                     YsmScg2Compat.MOD_ID, fieldName, t.toString());

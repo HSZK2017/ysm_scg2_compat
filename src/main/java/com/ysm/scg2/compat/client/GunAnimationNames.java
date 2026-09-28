@@ -26,11 +26,15 @@ import java.util.function.Function;
  *   tac:climb:&lt;type&gt;         tac:climbing:&lt;type&gt;
  *   tac:hold:fire:&lt;type&gt;     tac:aim:fire:&lt;type&gt;     tac:climbing:fire:&lt;type&gt;
  *   tac:reload:&lt;type&gt;        tac:melee:&lt;type&gt;
- *   &lt;prefix&gt;$&lt;namespace&gt;:&lt;path&gt;        e.g. tac:hold:rifle$scguns:musket
+ *   &lt;action prefix without its colon&gt;$&lt;namespace&gt;:&lt;path&gt;    e.g. tac:hold$scguns:musket
  * </pre>
  *
  * <p>{@code <type>} is one of {@code pistol} / {@code rifle} / {@code rpg}, exactly the
- * lower-cased {@code GunTabType} names YSM compares against.</p>
+ * lower-cased {@code GunTabType} names YSM compares against. The per-gun form carries
+ * <b>no</b> type: YSM hands {@code ConditionTAC} the action prefix alone, so the name it
+ * builds is {@code "tac:hold:"} minus its colon plus {@code $<gun id>}. The model packs
+ * agree - the per-gun clips they ship are {@code tac:hold$tacz:minigun},
+ * {@code tac:aim:fire$tacz:minigun} and so on.</p>
  */
 public final class GunAnimationNames {
 
@@ -81,17 +85,20 @@ public final class GunAnimationNames {
         }
 
         /**
-         * {@code tac:hold:rifle} plus {@code scguns:musket} to
-         * {@code tac:hold:rifle$scguns:musket}.
+         * {@code tac:hold:} plus {@code scguns:musket} to {@code tac:hold$scguns:musket}.
          *
-         * <p>Mirrors YSM's own {@code ConditionTAC} vocabulary - it strips the last
-         * character of the prefix it is handed and appends {@code $<gun id>} - which is
-         * otherwise unreachable for SCG2 weapons because it resolves the gun id through
-         * TACZ.</p>
+         * <p>Mirrors YSM's own {@code ConditionTAC#doTest}, which is handed the action
+         * <em>prefix</em> ({@code "tac:hold:"}), strips its last character and appends
+         * {@code $<gun id>} - so the type is not part of the per-gun name. This method used to
+         * append the id to the resolved generic name instead, producing
+         * {@code tac:hold:rp$scguns:terra_incognita}: a name no model can define, which made
+         * the per-gun override option inert rather than wrong-looking.</p>
+         *
+         * <p>The convention is YSM's, so it is otherwise unreachable for SCG2 weapons only
+         * because YSM resolves the gun id through TACZ.</p>
          */
-        public String forGun(String gunType, String gunId) {
-            String generic = forType(gunType);
-            return generic.substring(0, generic.length() - 1) + '$' + gunId;
+        public String forGun(String gunId) {
+            return this.prefix.substring(0, this.prefix.length() - 1) + '$' + gunId;
         }
     }
 
@@ -119,7 +126,7 @@ public final class GunAnimationNames {
                                  @Nullable String gunId,
                                  boolean perGunAllowed) {
         if (perGunAllowed && gunId != null) {
-            String perGun = action.forGun(gunType, gunId);
+            String perGun = action.forGun(gunId);
             if (Boolean.TRUE.equals(existsInModel.apply(perGun))) {
                 return perGun;
             }

@@ -32,5 +32,14 @@ if errorlevel 1 (
 )
 
 echo.
+echo === reflection verification ===
+REM Runs the built jar's own resolver against Yes Steve Model's own classes in a bare JVM.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\verify-member-lookup.ps1"
+if errorlevel 1 (
+    echo MEMBER LOOKUP VERIFICATION FAILED
+    exit /b 1
+)
+
+echo.
 echo OK. Artifact: build\libs\
 endlocal

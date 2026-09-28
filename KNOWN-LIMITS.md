@@ -3,15 +3,84 @@
 What is verified, what is not, and why. Required reading before treating any of this as
 "done".
 
-## STATUS: both YSM builds targeted, neither verified in game
+## STATUS: works in game on ModernYSM; 0.1.1 fixes the released RPG pose, pending confirmation
 
-1.1.0 supports the readable fork **and** the obfuscated official release - the build the
-instance actually has. Both paths are offline-verified down to the descriptors compiled into
-the shipped classes. Neither has been observed producing a gun pose in a running client.
+The instance runs `openysm-forge-2.6.6.6.jar` (classified `MODERN_YSM`). The 0.1.0 launch log
+and probe file show the chain working end to end for that build: the mixin applied, the
+injected handler was reached, and the hold decision matched the model's own clip
+(`decideHold MATCHED tac:hold:rifle for scguns:astella`, `... tac:hold:rpg for
+scguns:terra_incognita`).
 
-The two problems that produced 1.0.0 and 1.0.1 are recorded below, because together they
+What 0.1.0 got wrong is the last step of that chain - the animation was handed to the
+controller **without the loop type** - and the visible symptom was reported by the player for
+the bazooka-class weapon: the model raises the weapon, then puts it down and keeps it down.
+Root cause and evidence: section 0.1.1 below. That is fixed in 0.1.1; whether the fixed build
+holds the pose is the one thing still waiting on a launch (see NOT verified).
+
+The two problems that produced 1.0.0 and 1.0.1 are recorded below too, because together they
 explain why this mod now looks up class names, ships two mixin variants, and has a verifier
 that reads its own compiled annotations.
+
+---
+
+## 0.1.1: the pose was released after one play-through (RPG weapons)
+
+**Symptom (player report).** With `scguns:terra_incognita` in hand - a four-barrel rocket
+launcher, grip type `scguns:bazooka`, animation set `rpg` - the model raises the weapon and
+then lowers it, permanently. Rifle and pistol weapons look correct.
+
+**Root cause: the requested loop type never reached the controller.** Three separate
+reflective misses, each of which returned a bare `null` that was indistinguishable from "the
+model cannot do this":
+
+| # | Call | Declared in the target | Asked for | Effect |
+|---|---|---|---|---|
+| 1 | `PredicateBasedController#setAnimation(String, ILoopType)` | parameter type is the **interface** `ILoopType` | `loopType.getClass()` = `EDefaultLoopTypes` | the loop type was dropped; the clip's own `loop` decided |
+| 2 | `SyncedDataKey<E extends Entity, T>#getValue(E)` | erases to `(Entity)Object` | `(Player)Object` | every SCG2 weapon state read as "off": no firing, reload or melee animation |
+| 3 | `getCapability(Capability, Direction)` | belongs to the **provider** (`Entity` via `CapabilityProvider`) | called on the `Capability` token, as `(Object, Object)` | the capability was always `null`, so the model report never ran |
+
+`Class#getMethod` matches parameter types **exactly**, so a value whose class implements the
+declared parameter type - or whose generic argument is narrower than the erasure - misses.
+Case 1 is the reported bug; cases 2 and 3 are the same mistake in the same file family, found
+while proving case 1.
+
+**Why only the RPG animation set showed it.** YSM passes
+`ILoopType.EDefaultLoopTypes.LOOP` explicitly for the hold/aim/run/climb family
+(`TacAnimHandler#playGunAnimation`), and the model packs' `tac:hold:rifle` / `tac:hold:pistol`
+clips *also* declare `"loop": true`, so dropping the loop type changed nothing for them.
+Every `tac:hold:rpg` and `tac:aim:rpg` in the packs checked (`builtin/wine_fox/*`,
+`builtin/misc/*`, `builtin/default`) declares **no** `loop` field, and
+`ILoopType.fromJson(null)` answers `PLAY_ONCE`. With `PLAY_ONCE`, YSM's
+`AnimationControllerInstance#process` hits
+
+```java
+if (animationState == RUNNING && currentAnimationLoop == PLAY_ONCE && adjustedTick >= currentAnimation.animationLength) {
+    startEndingTransition(tick);   // 3 ticks of blend back to rest
+}
+```
+
+0.375 s (the clip's `animation_length`) after the weapon came up. The controller then goes
+`IDLE` with `lastRequestedAnimation` still populated, and every later identical request
+short-circuits on it (`setAnimation` returns early when the name *and* loop type match), so
+the pose never returns. Raising and lowering the weapon once is exactly that sequence.
+
+**Fix.** `MemberLookup` matches parameters by assignability (`isInstance`), preferring exact
+types; `YsmMemberNames.resolveCallable` uses it before giving up, and reports a widened match
+once, in the probe file. `YsmBridge.playAnimation` now resolves
+`setAnimation(String, ILoopType)` correctly and **warns** if a requested loop type cannot be
+delivered, so this can never degrade silently again. `Scg2GunAccess` resolves `getValue` by
+assignability at first read, and `YsmBridge.getCapability` calls `getCapability` on the
+player with assignability matching.
+
+**Also corrected while proving the above** (not the reported symptom, but the same class of
+error):
+
+* `GunAnimationNames.Action#forGun` built `tac:hold:rp$scguns:terra_incognita` by appending
+  the gun id to the *resolved* name. YSM's `ConditionTAC#doTest` is handed the action
+  *prefix* and appends the id to that, and the model packs agree: the names they ship are
+  `tac:hold$tacz:minigun`, `tac:aim:fire$tacz:minigun`, … - no type. The option
+  `animation.use_per_gun_animation_override` was therefore inert. It now builds
+  `tac:hold$scguns:<path>`.
 
 ---
 
@@ -123,6 +192,17 @@ target types in signatures is `GunAnimationDecision`, which sits in the mixin pa
 | A missing animation name clears and then freezes a controller | fork source: `AnimationControllerInstance.java:94-109`, `applyPendingAnimation()` |
 | The mod reaches its own constructor and resolves both target mods | the 1.0.0 launch log line `[ysm_scg2_compat] path: active. Yes Steve Model + Scorched Guns 2 both present` |
 
+### Added for 0.1.1
+
+| Claim | How it was checked |
+|---|---|
+| An exact-type lookup **cannot** find `setAnimation(String, ILoopType)` from an `EDefaultLoopTypes` value, and the shipped resolver can - with YSM's real `ILoopType` loaded out of `openysm-forge-2.6.6.6.jar` | `powershell -File tools/verify-member-lookup.ps1` → 15/15 checks, run against both the fork jar and the installed ModernYSM jar |
+| `SyncedDataKey#getValue` really is compiled as `(Lnet/minecraft/world/entity/Entity;)Ljava/lang/Object;`, i.e. not `(Player)` | `javap -p -s` on `framework-forge-1.20.1-0.8.0.jar`, printed by the same script |
+| `net.minecraftforge.common.capabilities.Capability` declares **no** `getCapability` method, so calling it on the token could only ever return `null` | `javap -p` on `forge-1.20.1-47.4.10-universal.jar`; the provider-side method is `CapabilityProvider#getCapability(Capability, Direction)` |
+| Every member the diagnostics chain uses exists on the installed build: `isModelActive()`, `getSelectedModelId()`, `getAnimation(String)`, `getModelAssembly()` → `getAnimationBundle()` → `getMainAnimations()` / `getArmAnimations()` | `javap` over `LivingAnimatable`, `CustomPlayerEntity`, `PlayerGeoEntity`, `GeoEntity`, `ModelAssembly`, `PlayerModelBundle` in the installed YSM jar |
+| The `tac:hold:rpg` / `tac:aim:rpg` clips in every model pack on this machine declare no `loop`, while `tac:hold:rifle` / `tac:hold:pistol` declare `"loop": true` | raw read of `config/yes_steve_model/builtin/{wine_fox,misc,default}/**/animations/*.json` |
+| The per-gun override names model packs actually ship are `tac:hold$tacz:minigun` and friends - action prefix plus `$<gun id>`, no type | same pack read; matches `ConditionTAC#doTest` in the fork source |
+
 ## In-game observations (1.1.0, obfuscated official release)
 
 The first real launch of 1.1.0 produced this, reported by the player and confirmed in
@@ -186,37 +266,65 @@ model report has been read.
 
 ## NOT verified
 
-1. **Whether the rebuilt 1.1.0 produces a third-person gun pose.** The fix above removed a
-   proven blocker; it is not proof that the pose now plays. The model report is the test:
-   `hold=tac:hold:rifle` (not `-`) means the guard passed, and the pose either plays or the
-   remaining cause is elsewhere.
-2. **The first/third-person asymmetry** described above. Unexplained until the report is read.
-3. **Whether Mixin warns about the unselected variant's missing target.** `getMixins()` lists one
+1. **Whether 0.1.1 keeps the RPG pose up.** The 0.1.0 probe file proves the animation was
+   requested and that the loop type was dropped; the chain from "PLAY_ONCE clip" to "pose
+   released" is read from YSM's own source, not observed. The test is one launch with the
+   weapon in hand: the pose must stay up, and the probe file must contain
+   `[member] playAnimation carries the loop type: ... setAnimation -> (String, ILoopType)`.
+   A `LOOP TYPE DROPPED` line instead means the remaining cause is elsewhere - do not guess
+   past it.
+2. **Whether the now-live firing, reloading and melee animations look right.** They were dead
+   in 0.1.0 because every SCG2 state read as "off" (root cause table, case 2). They are
+   enabled by the same fix, so they are new behaviour being seen for the first time: check
+   that automatic fire, a magazine reload and a bayonet melee each play their `tac:*` clip and
+   that nothing sticks afterwards.
+3. **Whether the model report now prints.** The capability accessor was broken (case 3), so
+   the report has never run on this instance. Expect the block starting
+   `--- YSM model report ---` in `latest.log` within ~20 s of the world loading, with
+   `tac:* in MAIN` listing the model's clips.
+4. **The first/third-person asymmetry** recorded under 1.1.0 below. In the 0.1.0 session the
+   guard was reached from both the render thread and `YSM Worker`, and the player reports the
+   third-person pose appearing, so the asymmetry looks closed - but it was never measured
+   against the model report, which was itself dead.
+5. **Whether Mixin warns about the unselected variant's missing target.** `getMixins()` lists one
    variant per run and `shouldApplyMixin` refuses the other; if a "target was not found" line
    appears for the variant that does not match this build, it is cosmetic.
-4. **Animation-state fidelity is approximate.** SCG2's `SHOOTING` flag is a monotonic sync flag
+6. **Animation-state fidelity is approximate.** SCG2's `SHOOTING` flag is a monotonic sync flag
    rather than a per-shot pulse, so `tac:*:fire:*` is requested while it is set rather than once
    per bullet; a single-reload weapon's `reload_loop` phase is collapsed into one `tac:reload:*`
    request.
-5. **Molang `tac_*` variables stay inert** for SCG2 weapons, by design (see
+7. **Molang `tac_*` variables stay inert** for SCG2 weapons, by design (see
    `GunAnimationDecision`). A model that branches its whole controller tree on
    `query.tac_hold_gun` will not animate; one driven by `tac:*` animations will.
-6. **Interaction with other mods that patch the same methods** is untested. `Mixin#priority` is
+8. **Interaction with other mods that patch the same methods** is untested. `Mixin#priority` is
    at the default.
-7. **The readable-fork path is untested in game**, because the fork jar in `libs/` has no native
+9. **The readable-fork path is untested in game**, because the fork jar in `libs/` has no native
    libraries. A fork build produced with `gradlew compileNative` is what that path expects.
-8. **The report's `tac:*` count uses the arm bundle.** `Diagnostics` asks
-   `AnimatableEntity#getAnimation`, which for a player resolves through `PlayerGeoEntity` to
-   `getArmAnimations()`. Third-person poses come from the main bundle. The count is therefore a
-   lower bound and is not the number that decides third person - do not read a small count as
-   "the model cannot do it".
+10. **The legacy obfuscated release is contract-verified only.** 0.1.1's three reflection fixes
+    are namespace-independent by construction (they match by assignability, not by name), but
+    the obfuscated member table has not been exercised against a running client since the fix.
+11. **SCG2 minigun-class weapons still share the rifle animation set.** The model packs ship
+    dedicated `tac:hold$tacz:minigun` clips, and `scg2_maid_compat` reaches them for Touhou
+    Little Maid by reporting the gun id `tacz:minigun`. This mod reports the real SCG2 id, so
+    those clips are not selected. Deliberately out of scope here; recorded so the option is not
+    mistaken for a bug.
+12. **The report's reference-name count uses the arm bundle.** `Diagnostics` asks
+    `AnimatableEntity#getAnimation`, which for a player resolves through `PlayerGeoEntity` to
+    `getArmAnimations()`. Third-person poses come from the main bundle - which is why the report
+    lists both bundles separately and says outright which one decides third person. The count is
+    a lower bound; do not read a small number as "the model cannot do it".
 
 Re-run the whole set:
 
 ```
 gradlew build
 powershell -File tools/verify-mixin-targets.ps1 -LegacyYsmJar "<path to the official release jar>"
+powershell -File tools/verify-member-lookup.ps1
 ```
+
+The last one picks up Yes Steve Model, Framework and gson from the installed instance when it
+is not given paths, and runs the built jar's own resolver against Yes Steve Model's own
+classes in a bare JVM - no Minecraft, no Forge.
 
 
 ---

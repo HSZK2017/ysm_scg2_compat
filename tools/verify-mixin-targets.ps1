@@ -56,6 +56,17 @@ foreach ($jar in @($YsmJar, $MixinJar)) {
     # which plain Test-Path reads as a wildcard class and fails to match.
     if (-not (Test-Path -LiteralPath $jar)) { throw "Not found: $jar" }
 }
+# Resolve every jar path to ABSOLUTE here.
+#
+# Expand-JarEntry changes the working directory before invoking `jar xf`, so a relative path is
+# resolved inside the scratch directory instead of the caller's directory and every extraction
+# fails. The symptom was badly misleading: "the class is not in the jar" for a jar that plainly
+# contains it, which sent the investigation after the jar rather than after the tool.
+$YsmJar = (Resolve-Path -LiteralPath $YsmJar).Path
+$MixinJar = (Resolve-Path -LiteralPath $MixinJar).Path
+if ($LegacyYsmJar -and (Test-Path -LiteralPath $LegacyYsmJar)) {
+    $LegacyYsmJar = (Resolve-Path -LiteralPath $LegacyYsmJar).Path
+}
 if (-not (Get-Command javap -ErrorAction SilentlyContinue)) {
     throw 'javap is not on PATH. Install a JDK 17 and retry.'
 }
@@ -339,9 +350,17 @@ try {
     #     what pre-verifies the strings the future second source set will use.
     # ------------------------------------------------------------------
     if (-not $LegacyYsmJar) {
-        $candidate = Get-ChildItem (Join-Path $env:APPDATA '.minecraft\versions') -Recurse `
-            -Filter '*ysm*release*.jar' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($candidate) { $LegacyYsmJar = $candidate.FullName }
+        # Prefer the jar we already classified. Auto-discovery below can pick a DIFFERENT release
+        # (this machine has 2.6.2 and 2.6.5, and they do not share obfuscated names), so the
+        # member checks would run against the wrong build and report a wall of false failures.
+        # Exactly that happened: the classified jar was superseded by the discovered one.
+        $LegacyYsmJar = if ($mainIsLegacy) {
+            $YsmJar
+        } else {
+            $discovered = Get-ChildItem (Join-Path $env:APPDATA '.minecraft\versions') -Recurse `
+                -Filter '*ysm*release*.jar' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($discovered) { $discovered.FullName } else { $null }
+        }
     }
     if ($LegacyYsmJar -and (Test-Path -LiteralPath $LegacyYsmJar)) {
         Write-Host "Legacy jar: $LegacyYsmJar"

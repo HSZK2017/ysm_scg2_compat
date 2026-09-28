@@ -2,6 +2,7 @@ package com.ysm.scg2.compat.client;
 
 import com.ysm.scg2.compat.ProbeLog;
 import com.ysm.scg2.compat.YsmScg2Compat;
+import com.ysm.scg2.compat.ysm.MemberLookup;
 import com.ysm.scg2.compat.ysm.YsmClasses;
 import com.ysm.scg2.compat.ysm.YsmFork;
 import com.ysm.scg2.compat.ysm.YsmMemberNames;
@@ -276,6 +277,30 @@ public final class YsmBridge {
      * token, so neither the capability's own class name nor the provider's field name has to
      * be known - which is what makes this work on the obfuscated build.</p>
      */
+    /**
+     * The player's YSM model capability, or {@code null}.
+     *
+     * <h2>Which object the call belongs to</h2>
+     * <p>{@code getCapability(Capability, Direction)} is a method of the <b>provider</b>
+     * ({@code ICapabilityProvider}, which Forge patches into {@code Entity} through
+     * {@code CapabilityProvider}), not of the {@code Capability} token. The token declares
+     * {@code getName}, {@code isRegistered}, {@code orEmpty} and {@code addListener} - and
+     * nothing else. This method used to ask the token, with {@code (Object, Object)} as the
+     * parameter types:</p>
+     *
+     * <pre>
+     *   findMethod(token.getClass(), "getCapability", Object.class, Object.class)  -&gt; null, always
+     * </pre>
+     *
+     * <p>Two independent reasons for the miss, and both silently produced {@code null}: the
+     * method is on the wrong class, and its declared parameters are
+     * {@code (Capability, Direction)} rather than {@code (Object, Object)}. The effect was that
+     * the whole diagnostic layer - the model report, the reference-name count and the
+     * per-bundle {@code tac:*} listing - never ran, which is exactly the telemetry needed to
+     * tell "the model cannot do this" from "the mod is not asking correctly". The call now goes
+     * to the player, resolved by assignability, and a failure is reported instead of returning
+     * a bare {@code null}.</p>
+     */
     @Nullable
     public static Object getCapability(Object player) {
         Object token = capabilityToken;
@@ -283,19 +308,41 @@ public final class YsmBridge {
             return null;
         }
         try {
-            Method getCapability = findMethod(token.getClass(), "getCapability", Object.class, Object.class);
+            Method getCapability = findAccepting(player.getClass(), "getCapability", token, null);
             if (getCapability == null) {
+                reportCapabilityUnavailable("no getCapability(Capability, Direction) is resolvable on "
+                        + player.getClass().getName());
                 return null;
             }
-            Object lazyOptional = getCapability.invoke(token, player, null);
+            Object lazyOptional = getCapability.invoke(player, token, null);
             if (lazyOptional == null) {
                 return null;
             }
             Method orElse = findMethod(lazyOptional.getClass(), "orElse", Object.class);
-            return orElse == null ? null : orElse.invoke(lazyOptional, (Object) null);
+            if (orElse == null) {
+                reportCapabilityUnavailable("the capability holder " + lazyOptional.getClass().getName()
+                        + " has no orElse(Object)");
+                return null;
+            }
+            return orElse.invoke(lazyOptional, (Object) null);
         } catch (Throwable t) {
+            reportCapabilityUnavailable(t.toString());
             return null;
         }
+    }
+
+    /** One warning per launch: a null capability must not look like "the player has no model". */
+    private static volatile boolean capabilityUnavailableReported;
+
+    private static void reportCapabilityUnavailable(String why) {
+        if (capabilityUnavailableReported) {
+            return;
+        }
+        capabilityUnavailableReported = true;
+        YsmScg2Compat.LOGGER.warn("[{}] the player's YSM capability could not be read ({}); the model report "
+                + "stays off for this session. The animation bridge is unaffected.",
+                YsmScg2Compat.MOD_ID, why);
+        ProbeLog.log("bridge", "capability unavailable: " + why);
     }
 
     /**
@@ -489,6 +536,29 @@ public final class YsmBridge {
     /**
      * Hands an animation to the event's controller.
      *
+     * <h2>The loop type is not optional</h2>
+     * <p>This method used to ask for {@code setAnimation(String, loopType.getClass())}. YSM
+     * declares that overload against the <b>interface</b> {@code ILoopType}, while the value
+     * here is an {@code ILoopType.EDefaultLoopTypes} enum constant, and {@code getMethod}
+     * matches parameter types exactly - so the lookup missed on every frame, the call silently
+     * fell through to the single-argument overload, and that overload passes {@code null} for
+     * the loop type. YSM's {@code AnimationControllerInstance#setAnimation} then uses the
+     * <em>clip's own</em> loop type.</p>
+     *
+     * <p>For most weapons that is invisible, because their {@code tac:hold:*} clip declares
+     * {@code "loop": true}. A clip that does not - every {@code tac:hold:rpg} in the model
+     * packs this was checked against - is treated as {@code PLAY_ONCE}, so the pose plays once,
+     * the controller runs its ending transition and goes idle with {@code lastRequestedAnimation}
+     * still populated, and every later identical request short-circuits on it. The weapon is
+     * raised and then put down, permanently. YSM's own TACZ path never has this problem: it
+     * passes {@code ILoopType.EDefaultLoopTypes.LOOP} explicitly for the hold/aim/run/climb
+     * family ({@code TacAnimHandler#playGunAnimation}).</p>
+     *
+     * <p>Resolution therefore goes through
+     * {@link YsmMemberNames#resolveCallable}, which matches the value against the declared
+     * parameter by assignability, and a failure to carry the loop type is now reported instead
+     * of being silent.</p>
+     *
      * @param animationEvent the event
      * @param loopType       the loop type object, or null to use the clip's own
      * @return true when the controller accepted it
@@ -499,15 +569,21 @@ public final class YsmBridge {
             return false;
         }
         if (loopType != null) {
-            Method withLoop = YsmMemberNames.resolve(controller.getClass(),
-                    YsmMemberNames.Member.CONTROLLER_SET_ANIMATION, String.class, loopType.getClass());
-            if (withLoop != null) {
+            Method withLoop = YsmMemberNames.resolveCallable(controller.getClass(),
+                    YsmMemberNames.Member.CONTROLLER_SET_ANIMATION, animationName, loopType);
+            if (withLoop != null && withLoop.getParameterCount() == 2) {
                 try {
                     withLoop.invoke(controller, animationName, loopType);
+                    reportLoopTypeCarried(controller.getClass(), withLoop);
                     return true;
-                } catch (Throwable ignored) {
-                    // Fall through to the single-argument overload.
+                } catch (Throwable t) {
+                    reportLoopTypeDropped(controller.getClass(),
+                            "invoking " + withLoop.getName() + "(String, " + loopType.getClass().getSimpleName()
+                                    + ") threw " + t);
                 }
+            } else {
+                reportLoopTypeDropped(controller.getClass(),
+                        "no (String, " + loopType.getClass().getSimpleName() + ") overload is resolvable");
             }
         }
         Method plain = YsmMemberNames.resolve(controller.getClass(),
@@ -521,6 +597,34 @@ public final class YsmBridge {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /** One probe line per launch confirming that the requested loop type actually travelled. */
+    private static volatile boolean loopTypeCarriedReported;
+
+    private static void reportLoopTypeCarried(Class<?> controllerClass, Method method) {
+        if (loopTypeCarriedReported) {
+            return;
+        }
+        loopTypeCarriedReported = true;
+        ProbeLog.log("member", "playAnimation carries the loop type: " + controllerClass.getName()
+                + '.' + method.getName() + " -> (" + method.getParameterTypes()[0].getSimpleName()
+                + ", " + method.getParameterTypes()[1].getSimpleName() + ")");
+    }
+
+    /** One warning per launch when a requested loop type cannot be delivered. */
+    private static volatile boolean loopTypeDroppedReported;
+
+    private static void reportLoopTypeDropped(Class<?> controllerClass, String why) {
+        if (loopTypeDroppedReported) {
+            return;
+        }
+        loopTypeDroppedReported = true;
+        YsmScg2Compat.LOGGER.warn("[{}] the requested loop type cannot be passed to {} ({}); "
+                        + "the animation will use the loop type declared inside the model clip, and a clip that "
+                        + "does not declare one will play once and then release the pose",
+                YsmScg2Compat.MOD_ID, controllerClass.getName(), why);
+        ProbeLog.log("member", "LOOP TYPE DROPPED for " + controllerClass.getName() + ": " + why);
     }
 
     /**
@@ -660,12 +764,22 @@ public final class YsmBridge {
             return null;
         }
         Class<?>[] parameterTypes = new Class<?>[args.length];
+        boolean exactTypesKnown = true;
         for (int i = 0; i < args.length; i++) {
+            if (args[i] == null) {
+                exactTypesKnown = false;
+                break;
+            }
             // With one String argument the only plausible overload takes a String, and
             // naming String.class is what lets a null-tolerant lookup stay possible.
             parameterTypes[i] = args[i] instanceof String ? String.class : args[i].getClass();
         }
-        Method method = findMethod(target.getClass(), name, parameterTypes);
+        Method method = exactTypesKnown ? findMethod(target.getClass(), name, parameterTypes) : null;
+        if (method == null) {
+            // The declared parameter may be a supertype of the value held, which an exact-type
+            // lookup cannot see; see MemberLookup for the two production failures that caused.
+            method = findAccepting(target.getClass(), name, args);
+        }
         if (method == null) {
             return null;
         }
@@ -674,6 +788,21 @@ public final class YsmBridge {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** {@link MemberLookup#find}, cached the same way {@link #findMethod} caches exact lookups. */
+    @Nullable
+    private static Method findAccepting(Class<?> type, String name, Object... args) {
+        String cacheKey = type.getName() + '#' + name + '/' + args.length + '!';
+        Method cached = METHOD_CACHE.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        Method found = MemberLookup.find(type, name, args);
+        if (found != null) {
+            METHOD_CACHE.put(cacheKey, found);
+        }
+        return found;
     }
 
     private static boolean invokeBoolean(@Nullable Object target, String name) {

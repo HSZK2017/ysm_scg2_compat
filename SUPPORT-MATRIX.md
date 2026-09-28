@@ -10,7 +10,7 @@ is installed and adapts. The fingerprints below follow the reference project
 
 | | LEGACY (official release) | OPEN (community fork) | MODERN (OpenYSM successor) |
 |---|---|---|---|
-| tested jar | `[是，史蒂夫模型] ysm-2.6.5-forge+mc1.20.1-release.jar` (63,269,843 B) | `libs/ysm-2.6.5-forge+mc1.20.1.jar` (22,912,248 B) | `openysm-forge-2.6.6.6.jar` (25,744,108 B) |
+| tested jar | `libs/ysm-2.6.5-official-release.jar` = `[是，史蒂夫模型] ysm-2.6.5-forge+mc1.20.1-release.jar` (63,269,843 B, sha256 `25B5E902…`) | `libs/ysm-2.6.5-forge+mc1.20.1.jar` (22,912,248 B) | `openysm-forge-2.6.6.6.jar` (25,744,108 B) |
 | class names | obfuscated | readable | readable |
 | member names | **obfuscated** | readable | readable |
 | TACZ bridge class | `com.elfmcys.yesstevemodel.OOO0O0O0oo0ooooo00oOOOO0` | `client.compat.gun.tacz.TacCompat` | `client.compat.gun.tacz.TacCompat` |
@@ -20,7 +20,7 @@ is installed and adapts. The fingerprints below follow the reference project
 | **identified as** | `LEGACY_YSM` | `OPEN_YSM` | `MODERN_YSM` |
 | **mixin variant used** | `TacCompatLegacyMixin` | `TacCompatForkMixin` | `TacCompatForkMixin` |
 | **member names resolved** | obfuscated column | readable column | readable column |
-| **status** | **works in game** (confirmed) | verified offline | verified offline |
+| **status** | **works in game** (confirmed on 2.6.5) | verified offline | **works in game** (confirmed on 2.6.6.6) |
 
 ## Fingerprints, and why these markers
 
@@ -89,3 +89,16 @@ powershell -File tools/verify-mixin-targets.ps1 `
 ```
 
 The script classifies whichever jar it is handed, then runs only the checks that apply to it.
+
+## 2.6.2 is a different legacy build
+
+`ysm-2.6.2-forge+mc1.20.1-release.jar` is also obfuscated, but it shares **none** of 2.6.5's
+obfuscated names: not the TACZ wrapper class, not the event class, not a single member this mod
+resolves. It is therefore not covered, and the failure mode is the intended one - the plugin lists
+no variant, the bridge logs what it could not resolve, and the game runs with SCG2 weapons on YSM's
+generic pose.
+
+The verifier reports that case as an explicit classification (`fork fingerprint … -> LEGACY_YSM`)
+followed by the TACZ wrapper being absent, rather than as a silent pass. If 2.6.2 support is ever
+wanted, its own name table has to be derived the same way 2.6.5's was - from the class list and the
+`tac:*` handler constants - not assumed.
